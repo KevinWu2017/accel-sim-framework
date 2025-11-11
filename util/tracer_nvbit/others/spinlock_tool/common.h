@@ -64,8 +64,22 @@ public:
         }
     }
 
+    // void merge(const KernelInstructionHistogram& other, bool use_hash = false) {
+    //     for (const auto& [instr_idx, count] : other.histogram) {
+    //         if (use_hash) {
+    //             // Simple modulo hash operation
+    //             add(instr_idx, count % hash_prime);
+    //             histogram[instr_idx] %= hash_prime;
+    //         } else {
+    //             add(instr_idx, count);
+    //         }
+    //     }
+    // }
+
     void merge(const KernelInstructionHistogram& other, bool use_hash = false) {
-        for (const auto& [instr_idx, count] : other.histogram) {
+        for (const auto& item : other.histogram) {
+            auto instr_idx = item.first;
+            auto count = item.second;
             if (use_hash) {
                 // Simple modulo hash operation
                 add(instr_idx, count % hash_prime);
@@ -88,7 +102,22 @@ public:
         std::map<uint32_t, std::pair<uint32_t, uint32_t>> spinlockInstructions;
         
         // Check all instructions in this histogram
-        for (const auto& [instrIdx, count] : histogram) {
+        // for (const auto& [instrIdx, count] : histogram) {
+        //     auto otherIt = other.histogram.find(instrIdx);
+        //     if (otherIt != other.histogram.end()) {
+        //         // Instruction exists in both histograms
+        //         if (count != otherIt->second) {
+        //             // Different execution counts - likely spinlock
+        //             spinlockInstructions[instrIdx] = {count, otherIt->second};
+        //         }
+        //     } else {
+        //         // Instruction only exists in this histogram
+        //         spinlockInstructions[instrIdx] = {count, 0};
+        //     }
+        // }
+        for (const auto& item : histogram) {
+            auto instrIdx = item.first;
+            auto count = item.second;
             auto otherIt = other.histogram.find(instrIdx);
             if (otherIt != other.histogram.end()) {
                 // Instruction exists in both histograms
@@ -103,7 +132,15 @@ public:
         }
         
         // Check instructions that only exist in the other histogram
-        for (const auto& [instrIdx, count] : other.histogram) {
+        // for (const auto& [instrIdx, count] : other.histogram) {
+        //     if (histogram.find(instrIdx) == histogram.end()) {
+        //         // Instruction only exists in other histogram
+        //         spinlockInstructions[instrIdx] = {0, count}; // Mark as 0 in this run
+        //     }
+        // }
+        for (const auto& item : other.histogram) {
+            auto instrIdx = item.first;
+            auto count = item.second;            
             if (histogram.find(instrIdx) == histogram.end()) {
                 // Instruction only exists in other histogram
                 spinlockInstructions[instrIdx] = {0, count}; // Mark as 0 in this run
@@ -142,7 +179,12 @@ public:
     // Get total instruction count
     uint64_t getTotalInstructionCount() const {
         uint64_t total = 0;
-        for (const auto& [instrIdx, count] : histogram) {
+        // for (const auto& [instrIdx, count] : histogram) {
+        //     total += count;
+        // }
+        for (const auto& item : histogram) {
+            auto instrIdx = item.first;
+            auto count = item.second;   
             total += count;
         }
         return total;
@@ -166,7 +208,12 @@ public:
     std::string serialize() const {
         std::stringstream ss;
         ss << "Kernel: " << name << " (ID: " << id << ")" << std::endl;
-        for (const auto &[instr_idx, count] : histogram) {
+        // for (const auto &[instr_idx, count] : histogram) {
+        //     ss << instr_idx << ": " << count << std::endl;
+        // }
+        for (const auto& item : histogram) {
+            auto instr_idx = item.first;
+            auto count = item.second;   
             ss << instr_idx << ": " << count << std::endl;
         }
         return ss.str();

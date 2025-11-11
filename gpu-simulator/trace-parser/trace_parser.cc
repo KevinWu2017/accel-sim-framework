@@ -231,7 +231,9 @@ trace_parser::trace_parser(const char *kernellist_filepath) {
   kernellist_filename = kernellist_filepath;
 }
 
+// note: 从一个指定的文件（kernellist_filename）中读取并解析一系列命令，生成一个包含这些命令信息的 std::vector<trace_command>，供后续的模拟器使用。
 std::vector<trace_command> trace_parser::parse_commandlist_file() {
+  // 打开命令列表文件
   std::ifstream fs;
   fs.open(kernellist_filename);
 
@@ -240,23 +242,29 @@ std::vector<trace_command> trace_parser::parse_commandlist_file() {
     exit(1);
   }
 
+  // 提取文件所在目录路径
   std::string directory(kernellist_filename);
   const size_t last_slash_idx = directory.rfind('/');
   if (std::string::npos != last_slash_idx) {
     directory = directory.substr(0, last_slash_idx);
   }
 
+  // 声明变量与初始化命令列表
   std::string line, filepath;
   std::vector<trace_command> commandlist;
+
+  // 逐行读取并解析文件
   while (!fs.eof()) {
     getline(fs, line);
     if (line.empty())
       continue;
+    // 处理 MemcpyHtoD 命令
     else if (line.substr(0, 10) == "MemcpyHtoD") {
       trace_command command;
       command.command_string = line;
       command.m_type = command_type::cpu_gpu_mem_copy;
       commandlist.push_back(command);
+    // 处理 kernel 启动命令
     } else if (line.substr(0, 6) == "kernel") {
       trace_command command;
       command.m_type = command_type::kernel_launch;
@@ -284,13 +292,22 @@ void trace_parser::parse_memcpy_info(const std::string &memcpy_command,
   ss >> std::dec >> count;
 }
 
+/*
+  note: 从一个指定的内核跟踪文件（kernel trace file）中读取并解析出该内核的元数据（metadata），
+  如名称、网格尺寸、块尺寸、共享内存大小等，并将这些信息填充到一个 kernel_trace_t 对象中
+*/
 kernel_trace_t *trace_parser::parse_kernel_info(
     const std::string &kerneltraces_filepath) {
+  // 打印处理日志
   std::cout << "Processing kernel " << kerneltraces_filepath << std::endl;
+  // 创建内核信息对象
   kernel_trace_t *kernel_info = new kernel_trace_t(kerneltraces_filepath);
+  // 初始化默认值
   kernel_info->enable_lineinfo = 0;  // default disabled
 
+  // 声明行缓冲区
   std::string line;
+  // 主循环：逐行读取文件
   while (kernel_info->pipeReader.readLine(line)) {
     if (line.length() == 0) {
       continue;

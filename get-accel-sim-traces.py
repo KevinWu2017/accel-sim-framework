@@ -1,3 +1,4 @@
+#  从远程服务器下载 GPU 应用程序的 trace 文件（压缩包），供 Accel-Sim 模拟使用。
 #!/usr/bin/env python3
 
 from optparse import OptionParser
@@ -15,7 +16,7 @@ import common
 
 millnames = ["", " K", " M", " G", " T"]
 
-
+# 将带单位的字符串转为数字
 def getNumRaw(n):
     try:
         return float(n)
@@ -28,7 +29,7 @@ def getNumRaw(n):
             count += 1
         return float(n)
 
-
+# 将数字格式化为带单位的字符串
 def millify(n):
     n = getNumRaw(n)
     if math.isnan(n):
@@ -44,6 +45,7 @@ def millify(n):
     return "{:.2f}{}".format(n / 10 ** (3 * millidx), millnames[millidx])
 
 
+# 表示一个应用程序套件（如 rodinia-3.1）
 class Suite:
     def __init__(self, name):
         self.name = name
@@ -51,12 +53,13 @@ class Suite:
         self.compressedSize = None
 
 
+# 表示一种 GPU 型号（如 tesla-v100）
 class Card:
     def __init__(self, name):
         self.name = name
-        self.suites = {}
+        self.suites = {}   # 包含多个 Suite
 
-    def getTotalCompressed(self):
+    def getTotalCompressed(self):    # 所有压缩包总大小
         total = 0.0
         for name, suite in self.suites.items():
             try:
@@ -65,13 +68,13 @@ class Card:
                 sys.exit("Problem with compressed size in suite {0}".format(name))
         return total
 
-    def getTotalUncompressed(self):
+    def getTotalUncompressed(self):   # 所有解压后总大小
         total = 0.0
         for name, suite in self.suites.items():
             total += suite.uncompressedSize
         return total
 
-
+# 下载单个 trace
 def downloadTrace(cardName, suiteName):
     webFile = os.path.join(
         WEB_DIRECTORY, cardName, VERSION + ".latest", suiteName + ".tgz"
@@ -84,6 +87,7 @@ def downloadTrace(cardName, suiteName):
 
 
 def main():
+    # 解析命令行参数
     parser = OptionParser()
     parser.add_option(
         "-a",
@@ -101,6 +105,8 @@ def main():
         help="Directory to download the traces to.",
     )
     (options, args) = parser.parse_args()
+    
+    # 设置下载目录
     try:
         hw_run_dir = common.dir_option_test(
             options.download_dir, "hw_run", this_directory
@@ -111,6 +117,8 @@ def main():
     if not os.path.exists(hw_run_dir):
         os.makedirs(hw_run_dir)
     os.chdir(hw_run_dir)
+    
+    # 下载 trace 索引文件
     # Parse the trace summary
     trace_summary = os.path.join(hw_run_dir, VERSION + ".trace.summary.txt")
     try:
@@ -124,6 +132,7 @@ def main():
         shell=True,
     ).communicate()
 
+    #  解析索引文件
     lineFormat = re.compile(r"(.*)\t(.*)/" + VERSION + ".latest/(.*)")
     sizeDict = {}
     for line in open(trace_summary):
@@ -146,6 +155,7 @@ def main():
             else:
                 suite.uncompressedSize = getNumRaw(size)
 
+    # 显示可用 trace 信息
     # Infor the user what is available - ask them what they want to do
     print("\n\nCurrently Available Traces:")
     for cardName, card in sizeDict.items():
@@ -165,6 +175,7 @@ def main():
                 )
             )
 
+    # 用户选择要下载的内容
     selectionValid = False
     while not selectionValid:
         if options.apps == None:

@@ -84,13 +84,22 @@ class ConfigurationSpec:
         print("Base config file = " + self.config_file)
 
     # 为一组基准测试程序（benchmarks）生成配置文件、设置运行目录，并通过 Torque 资源管理器提交模拟任务到集群中执行。
+    # note: 为当前配置（ConfigurationSpec）生成、准备并提交所有基准程序的模拟任务（到 Slurm/Qsub/本地）
+    # build_handle 当前模拟器的版本标识（字符串，如 "accelsim-commit-ff9a5d6_modified_3.0_25-10-24-11-30-33gpgpu-sim_git-commit-b18ee397_modified_0.0"）
+    # benchmarks 要运行的 benchmark 列表（由 gen_apps_from_suite_list 生成）
+    # run_directory 当前实验的主运行目录，如 sim_run_cuda12/
+    # cuda_version 当前 CUDA 版本号，用于路径或 job 标记
+    # simdir 当前模拟器的可执行文件目录（libcudart.so 或 accel-sim.out 所在位置）
     def run(self, build_handle, benchmarks, run_directory, cuda_version, simdir):
+        # 遍历所有的benchmark
         # 对每一个基准测试进行处理，解包出可执行路径、数据路径、名称以及参数列表。
         for dir_bench in benchmarks:
             exec_dir, data_dir, benchmark, self.command_line_args_list = dir_bench
             # 设置执行和数据目录  Trace模式不需要
             full_exec_dir = ""  # For traces it is not necessary to have the apps built
             full_data_dir = ""
+            
+            # 处理执行与数据目录
             if options.trace_dir == "":
                 full_exec_dir = common.dir_option_test(
                     os.path.expandvars(exec_dir), "", this_directory
@@ -107,12 +116,14 @@ class ConfigurationSpec:
                     pass
 
             # 为每组命令行参数创建子目录名
+            # 生成命令行参数的子目录名
             self.benchmark_args_subdirs = {}
             for argmap in self.command_line_args_list:
                 args = argmap["args"]
                 self.benchmark_args_subdirs[args] = common.get_argfoldername(args)
 
             # 再次循环：为每组参数准备和提交作业
+            # 为每个参数配置生成运行目录并准备文件
             for argmap in self.command_line_args_list:
                 args = argmap["args"]
                 mem_usage = argmap["accel-sim-mem"]
@@ -123,11 +134,13 @@ class ConfigurationSpec:
                     run_directory, appargs_run_subdir, self.run_subdir
                 )
                 #  创建运行目录并复制必要资源
+                
+                # 拷贝输入文件与生成运行环境
                 self.setup_run_directory(
                     full_data_dir, this_run_dir, data_dir, appargs_run_subdir
                 )
 
-                # 生成 Torque 提交脚本（PBS）
+                # 生成 job 脚本内容（例如 torque 或 slurm）
                 self.text_replace_torque_sim(
                     full_data_dir,
                     this_run_dir,
@@ -139,12 +152,13 @@ class ConfigurationSpec:
                     build_handle,
                     mem_usage,
                 )
-                # 生成 GPGPU-Sim 配置文件
+                
+                # 附加 GPGPU-Sim 配置文件
                 self.append_gpgpusim_config(
                     benchmark, this_run_dir, appargs_run_subdir, self.config_file
                 )
 
-                # 提交作业到 Torque 队列系统
+                # 提交任务到集群（或本地）
                 # Submit the job to torque and dump the output to a file
                 if not options.no_launch:
                     torque_out_filename = this_directory + "torque_out.{0}.txt".format(
@@ -162,6 +176,7 @@ class ConfigurationSpec:
                     ):
                         exit("Error Launching Job")
                     else:
+                        # 解析 job 提交结果并记录日志
                         # Parse the torque output for just the numeric ID
                         torque_out_file.seek(0)
                         torque_out = re.sub(
@@ -218,6 +233,7 @@ class ConfigurationSpec:
                             file=logfile,
                         )
                         logfile.close()
+            # 清理状态
             self.benchmark_args_subdirs.clear()
 
     #########################################################################################
@@ -504,7 +520,7 @@ options.simulator_dir = running_sim_dir
 
 common.load_defined_yamls()
 
-# 自动检测系统中可用的作业调度系统（如 Slurm、Torque/PBS）或回退到本地进程管理，并同时 验证 CUDA 编译器 nvcc 是否可用。
+# 检测并决定如何提交/启动作业
 # Test for the existance of a cluster management system
 job_submit_call = None
 job_template = None

@@ -68,6 +68,7 @@ parser.add_option(
     help="Number of iterations to keep for spinlock fast forwarding. Only used if spinlock_handling is fast_forward",
 )
 
+# 参数解析与初始化
 (options, args) = parser.parse_args()
 
 common.load_defined_yamls()
@@ -95,7 +96,8 @@ for bench in benchmarks:
                     this_directory,
                     "..",
                     "..",
-                    "hw_run",
+                    "nfs_hw_run",
+                    "lsc",
                     "traces",
                     "device-" + options.device_num,
                     cuda_version,
