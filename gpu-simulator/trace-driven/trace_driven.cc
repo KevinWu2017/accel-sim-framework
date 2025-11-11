@@ -451,19 +451,28 @@ void trace_config::reg_options(option_parser_t opp) {
   }
 }
 
+// note: trace 驱动模式下的配置解析函数
 void trace_config::parse_config() {
+  // 整数运算（INT）
   sscanf(trace_opcode_latency_initiation_int, "%u,%u", &int_latency, &int_init);
+  // 单精度浮点（SP / FP）
   sscanf(trace_opcode_latency_initiation_sp, "%u,%u", &fp_latency, &fp_init);
+  // 双精度浮点（DP）
   sscanf(trace_opcode_latency_initiation_dp, "%u,%u", &dp_latency, &dp_init);
+  // 特殊函数单元（SFU）
   sscanf(trace_opcode_latency_initiation_sfu, "%u,%u", &sfu_latency, &sfu_init);
+  // 张量核心（Tensor Core）
   sscanf(trace_opcode_latency_initiation_tensor, "%u,%u", &tensor_latency,
          &tensor_init);
 
+  // 自定义专用单元（Specialized Units）
   for (unsigned j = 0; j < SPECIALIZED_UNIT_NUM; ++j) {
     sscanf(trace_opcode_latency_initiation_specialized_op[j], "%u,%u",
            &specialized_unit_latency[j], &specialized_unit_initiation[j]);
   }
 }
+
+
 void trace_config::set_latency(unsigned category, unsigned &latency,
                                unsigned &initiation_interval) const {
   initiation_interval = latency = 1;
@@ -513,6 +522,7 @@ void trace_gpgpu_sim::createSIMTCluster() {
                                     m_shader_stats, m_memory_stats);
 }
 
+
 void trace_simt_core_cluster::create_shader_core_ctx() {
   m_core = new shader_core_ctx *[m_config->n_simt_cores_per_cluster];
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
@@ -523,8 +533,12 @@ void trace_simt_core_cluster::create_shader_core_ctx() {
   }
 }
 
+// note: 为 shader core 创建并初始化 warp 管理对象
 void trace_shader_core_ctx::create_shd_warp() {
+  // 将 m_warp 的大小调整为最大 warp 数，为后续分配每个 warp 的对象预留空间
   m_warp.resize(m_config->max_warps_per_shader);
+
+  // 循环创建每个 warp 对象
   for (unsigned k = 0; k < m_config->max_warps_per_shader; ++k) {
     m_warp[k] = new trace_shd_warp_t(this, m_config->warp_size);
   }
@@ -579,13 +593,19 @@ void trace_shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
   init_traces(start_warp, end_warp, kernel);
 }
 
+// note: trace 模式下从 trace-buffer 取下一条指令并在 warp 完成时做善后处理
 const warp_inst_t *trace_shader_core_ctx::get_next_inst(unsigned warp_id,
                                                         address_type pc) {
   // read the inst from the traces
+  // 类型转化
   trace_shd_warp_t *m_trace_warp =
       static_cast<trace_shd_warp_t *>(m_warp[warp_id]);
+  // 从该 warp 的 trace 向量中取出下一条要重放的 trace 指令并返回
   const trace_warp_inst_t *ret = m_trace_warp->get_next_trace_inst();
+
+  // 检查该 warp 的 trace 是否已经被读完
   if (m_trace_warp->trace_done()) {
+    // 除了文件结束，还要等所有副作用结束，才能判定该warp结束
     if (!m_warp[warp_id]->inst_in_pipeline() &&
         m_warp[warp_id]->stores_done() &&
         !m_scoreboard->pendingWrites(warp_id)) {
@@ -625,12 +645,16 @@ void trace_shader_core_ctx::init_traces(unsigned start_warp, unsigned end_warp,
   }
 }
 
+// note: 在执行完一条 warp 指令后，更新线程和 warp 的执行状态，同时处理某些特殊类型的指令（例如原子操作、局部内存访问）
 void trace_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
                                                           unsigned t,
                                                           unsigned tid) {
+  // 检查并统计原子操作（atomic）
   if (inst.isatomic()) m_warp[inst.warp_id()]->inc_n_atomic();
 
+  // 局部内存访问处理
   if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
+    // 地址转换
     new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
     unsigned num_addrs;
     num_addrs = translate_local_memaddr(

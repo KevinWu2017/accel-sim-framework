@@ -16,3 +16,6 @@ compile_commands.json
 .cache
 .cursorrules
 CLAUDE.md
+
+nfs_hw_run
+test_run
