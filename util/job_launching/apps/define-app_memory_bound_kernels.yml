@@ -1,0 +1,32 @@
+memory_bound_kernels:
+    exec_dir: "$GPUAPPS_ROOT/bin/$CUDA_VERSION/release/"
+    data_dirs: "$GPUAPPS_ROOT/data_dirs/"
+    execs:
+        - Softmax:
+          - args: 16 512 
+        - Softmax:
+          - args: 32 2048
+        - Softmax:
+          - args: 64 4096
+        - Softmax:
+          - args: 128 8192       
+        - RmsNorm:
+          - args: 16 768
+        - RmsNorm:
+          - args: 32 4096
+        - RmsNorm:
+          - args: 64 8192
+        - RmsNorm:
+          - args: 32 12288
+        - Silu:
+          - args: 32 4096
+        - Silu:
+          - args: 64 8192
+        - Silu:
+          - args: 32 12288        
+        - RotaryEmb:
+          - args: 2048 16 64 32
+        - RotaryEmb:
+          - args: 4096 32 128 64
+        - RotaryEmb:
+          - args: 8192 64 128 64       

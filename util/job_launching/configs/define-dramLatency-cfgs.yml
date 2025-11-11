@@ -1,0 +1,14 @@
+A100_simpleDram_Latency160_100:
+    base_file: "$GPGPUSIM_ROOT/configs/dramLatency-cfgs/A100_simpleDram_Latency160_100/gpgpusim.config"
+
+A100_simpleDram_Latency160_150:
+    base_file: "$GPGPUSIM_ROOT/configs/dramLatency-cfgs/A100_simpleDram_Latency160_150/gpgpusim.config"
+
+A100_simpleDram_Latency160_200:
+    base_file: "$GPGPUSIM_ROOT/configs/dramLatency-cfgs/A100_simpleDram_Latency160_200/gpgpusim.config"
+
+A100_simpleDram_Latency160_500:
+    base_file: "$GPGPUSIM_ROOT/configs/dramLatency-cfgs/A100_simpleDram_Latency160_500/gpgpusim.config"
+
+A100_simpleDram_Latency160_1000:
+    base_file: "$GPGPUSIM_ROOT/configs/dramLatency-cfgs/A100_simpleDram_Latency160_1000/gpgpusim.config"

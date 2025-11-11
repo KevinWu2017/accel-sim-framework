@@ -1,0 +1,12 @@
+gemm:
+    exec_dir: "$GPUAPPS_ROOT/bin/$CUDA_VERSION/release/"
+    data_dirs: "$GPUAPPS_ROOT/data_dirs/"
+    execs:
+        - cutlass_00_basic_gemm:
+          - args: 256 512 256
+        - cutlass_14_ampere_tf32_tensorop_gemm:
+          - args: 256 512 256 2 0.707
+        - cublas_gemmStrideBatch:
+          - args: 256 512 256 batch8
+        - cublas_sgemm:
+          - args: 256 512 256 1 0

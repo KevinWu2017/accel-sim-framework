@@ -226,8 +226,10 @@ def millify(n):
 # *********************************************************--
 # main script start
 # *********************************************************--
+# this_directory为当前文件的绝对路径
 this_directory = os.path.dirname(os.path.realpath(__file__)) + "/"
 
+# 解析参数
 parser = OptionParser()
 parser.add_option(
     "-l",
@@ -280,6 +282,7 @@ options.sim_name = options.sim_name.strip()
 
 cuda_version = common.get_cuda_version(this_directory)
 
+# 自动检测作业管理器（Job Manager）
 if options.job_manager != None:
     job_manager = options.job_manager
 elif any(
@@ -299,9 +302,12 @@ elif any(
 else:
     job_manager = "procman"
 
+# 确定要解析哪些日志文件
 parsed_logfiles = []
 logfiles_directory = this_directory + "../job_launching/logfiles/"
+# 未指定？
 if options.logfile == "":
+    # 默认目录存在
     if not os.path.exists(logfiles_directory):
         exit("No logfile specified and the default logfile directory cannot be found")
     all_logfiles = [
@@ -334,8 +340,10 @@ elif options.logfile == "all":
 else:
     parsed_logfiles.append(common.file_option_test(options.logfile, "", this_directory))
 
+# Using logfiles ['/home/lsc/HBF/accel-sim-framework/util/job_launching/../job_launching/logfiles/sim_log.gemm-sass-test.25.11.09-Sunday.txt']
 print("Using logfiles " + str(parsed_logfiles))
 
+# 设置并验证运行目录 (run_dir) 默认sim_run_11.7
 options.run_dir = common.dir_option_test(
     options.run_dir,
     this_directory + ("../../sim_run_%s/" % cuda_version),
@@ -348,6 +356,7 @@ if not os.path.isdir(options.run_dir):
         + " does not exist - specify the run directory where the benchmark/config dirs exist"
     )
 
+# 定义状态关键词 —— status_strings
 # Searches the output file for these strings.
 # If they exist, it assumes that the functional
 # Test implemented in the CPU program has passed
@@ -368,6 +377,7 @@ status_strings = {
     "XML Parsing error.*gpuwattch": "NO_GPU_WATTCH_CFG",
 }
 
+# 提取性能统计数据 —— stats_to_pull
 # Also searches the output files for these stats and prints them in the log
 stats_to_pull = {
     "SIM_TIME": r"gpgpu_simulation_time\s*=[^1-9]*(.*)",
@@ -377,6 +387,7 @@ stats_to_pull = {
     "SIMRATE_IPS": r"gpgpu_simulation_rate\s*=\s*(.*)\s*\(inst/sec\)",
 }
 
+# 定义日志输出格式 —— ROW_STRING
 ROW_STRING = (
     "{jobId:<10.10}\t{exec_node:<30.30}\t{app:<20.20}\t{args:<20.20}\t"
     + "{version:20.20}\t{config:10.10}\t{running_time:15}\t{mem_used:6}\t{status:30.30}\t"

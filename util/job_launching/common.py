@@ -84,6 +84,7 @@ def get_config(name, defined_baseconfigs, defined_xtracfgs):
 
 
 def load_defined_yamls():
+    # 使用 glob.glob() 查找所有匹配 apps/define-*.yml 的文件。
     define_yamls = glob.glob(os.path.join(this_directory, "apps/define-*.yml"))
     for def_yaml in define_yamls:
         parse_app_definition_yaml(
@@ -98,18 +99,25 @@ def load_defined_yamls():
         )
 
 
+# 解析一个 YAML 格式的 benchmark 应用定义文件，并将解析结果以多种粒度（suite、executable、具体运行参数）存入字典 apps 中
 def parse_app_definition_yaml(def_yml, apps):
+    # 加载 YAML 文件
     benchmark_yaml = yaml.load(open(def_yml), Loader=yaml.FullLoader)
+    # 遍历每个 benchmark 套件（如 rodinia_2.0-ft）
     for suite in benchmark_yaml:
         apps[suite] = []
+        #  遍历该套件中的每个可执行程序（execs 列表）
         for exe in benchmark_yaml[suite]["execs"]:
             exe_name = list(exe.keys())[0]
             args_list = list(exe.values())[0]
+            # 遍历该可执行文件的每一个具体运行配置（带参数）
             count = 0
             for runparms in args_list:
                 args = runparms["args"]
+                # 如果未指定内存，默认设为 4G
                 if "accel-sim-mem" not in runparms:
                     runparms["accel-sim-mem"] = "4G"
+                # 创建唯一 ID：suite:exe_name:count （如 rodinia_2.0-ft:bfs:0）
                 apps[suite + ":" + exe_name + ":" + str(count)] = []
                 apps[suite + ":" + exe_name + ":" + str(count)].append(
                     (
@@ -120,6 +128,7 @@ def parse_app_definition_yaml(def_yml, apps):
                     )
                 )
                 count += 1
+            # 存储“整个可执行程序”的完整参数列表（不拆分）
             apps[suite].append(
                 (
                     benchmark_yaml[suite]["exec_dir"],
@@ -128,6 +137,7 @@ def parse_app_definition_yaml(def_yml, apps):
                     args_list,
                 )
             )
+            # 存储“按可执行文件聚合”的视图
             apps[suite + ":" + exe_name] = []
             apps[suite + ":" + exe_name].append(
                 (
@@ -222,7 +232,7 @@ def dir_option_test(name, default, this_directory):
             raise PathMissing("Error - directory test fails for {0}".format(name))
     return name
 
-
+# note:解析用户从命令行传入的参数，返回一个包含所有选项的对象 options 和额外的位置参数 args
 def parse_run_simulations_options():
     parser = OptionParser()
     parser.add_option(

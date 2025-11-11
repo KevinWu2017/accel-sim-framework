@@ -83,9 +83,12 @@ class ConfigurationSpec:
         print("Parameters = " + self.params)
         print("Base config file = " + self.config_file)
 
+    # 为一组基准测试程序（benchmarks）生成配置文件、设置运行目录，并通过 Torque 资源管理器提交模拟任务到集群中执行。
     def run(self, build_handle, benchmarks, run_directory, cuda_version, simdir):
+        # 对每一个基准测试进行处理，解包出可执行路径、数据路径、名称以及参数列表。
         for dir_bench in benchmarks:
             exec_dir, data_dir, benchmark, self.command_line_args_list = dir_bench
+            # 设置执行和数据目录  Trace模式不需要
             full_exec_dir = ""  # For traces it is not necessary to have the apps built
             full_data_dir = ""
             if options.trace_dir == "":
@@ -103,11 +106,13 @@ class ConfigurationSpec:
                 except common.PathMissing:
                     pass
 
+            # 为每组命令行参数创建子目录名
             self.benchmark_args_subdirs = {}
             for argmap in self.command_line_args_list:
                 args = argmap["args"]
                 self.benchmark_args_subdirs[args] = common.get_argfoldername(args)
 
+            # 再次循环：为每组参数准备和提交作业
             for argmap in self.command_line_args_list:
                 args = argmap["args"]
                 mem_usage = argmap["accel-sim-mem"]
@@ -117,10 +122,12 @@ class ConfigurationSpec:
                 this_run_dir = os.path.join(
                     run_directory, appargs_run_subdir, self.run_subdir
                 )
+                #  创建运行目录并复制必要资源
                 self.setup_run_directory(
                     full_data_dir, this_run_dir, data_dir, appargs_run_subdir
                 )
 
+                # 生成 Torque 提交脚本（PBS）
                 self.text_replace_torque_sim(
                     full_data_dir,
                     this_run_dir,
@@ -132,10 +139,12 @@ class ConfigurationSpec:
                     build_handle,
                     mem_usage,
                 )
+                # 生成 GPGPU-Sim 配置文件
                 self.append_gpgpusim_config(
                     benchmark, this_run_dir, appargs_run_subdir, self.config_file
                 )
 
+                # 提交作业到 Torque 队列系统
                 # Submit the job to torque and dump the output to a file
                 if not options.no_launch:
                     torque_out_filename = this_directory + "torque_out.{0}.txt".format(
@@ -173,6 +182,7 @@ class ConfigurationSpec:
                     os.remove(torque_out_filename)
                     os.chdir(saved_dir)
 
+                    # 记录日志信息
                     if len(torque_out) > 0:
                         # Dump the benchmark description to the logfile
                         if not os.path.exists(this_directory + "logfiles/"):
@@ -432,6 +442,7 @@ if str(os.getenv("GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN")) != "1":
 
 cuda_version = common.get_cuda_version(this_directory)
 
+# 确定运行目录 默认为根目录下sim_run_11.7
 if options.run_directory == "":
     options.run_directory = os.path.join(
         this_directory, "../../sim_run_%s" % cuda_version
@@ -439,32 +450,41 @@ if options.run_directory == "":
 else:
     options.run_directory = os.path.join(os.getcwd(), options.run_directory)
 
+#  安全地复制模拟器的可执行文件或动态库（.so 或 accel-sim.out）到一个独立的运行目录中，以避免在运行测试时被正在进行的编译过程覆盖或干扰。
 # Let's copy out the .so file so that builds don't interfere with running tests
 # If the user does not specify a so file, then use the one in the git repo and copy it out.
+# 非 trace 模式：使用 GPGPU-Sim
 if options.trace_dir == "":
     options.simulator_dir = common.dir_option_test(
         options.simulator_dir,
         os.path.join(os.getenv("GPGPUSIM_ROOT"), "lib", os.getenv("GPGPUSIM_CONFIG")),
         this_directory,
     )
+    # /home/lsc/HBF/gpgpu-sim_distribution/lib/gcc-9.4.0/cuda-11070/release
     simulator_path = os.path.join(options.simulator_dir, "libcudart.so")
+ # trace 模式：使用 Accel-Sim 
 else:
     options.simulator_dir = common.dir_option_test(
         options.simulator_dir,
         os.path.join(os.getenv("ACCELSIM_ROOT"), "bin", os.getenv("ACCELSIM_CONFIG")),
         this_directory,
     )
+    # /home/lsc/HBF/accel-sim-framework/gpu-simulator/bin/release/accel-sim.out
     simulator_path = os.path.join(options.simulator_dir, "accel-sim.out")
 
+# 确定使用模拟器的版本
 if options.trace_dir == "":
+    # gpgpu-sim_git-commit-b18ee397_modified_0.0
     version_string = extract_version(simulator_path, "gpgpusim")
 else:
     gpgpusim_path = os.path.join(
         os.getenv("GPGPUSIM_ROOT"), "lib", os.getenv("GPGPUSIM_CONFIG"), "libcudart.so"
     )
+    # accelsim-commit-ff9a5d6_modified_3.0_25-10-24-11-30-33gpgpu-sim_git-commit-b18ee397_modified_0.0
     version_string = extract_version(simulator_path, "accelsim") + extract_version(
         gpgpusim_path, "gpgpusim"
     )
+# /sim_run_11.7/gpgpu-sim-builds/{version_string}
 running_sim_dir = os.path.join(
     options.run_directory, "gpgpu-sim-builds", version_string
 )
@@ -476,12 +496,15 @@ if not os.path.exists(running_sim_dir):
     except:
         pass
 
+# 安全地将模拟器的可执行文件（或动态库）复制到一个隔离的运行目录中，并更新配置，使后续流程使用这个副本，而不是原始构建目录中的文件。
 if not os.path.exists(os.path.join(running_sim_dir, os.path.basename(simulator_path))):
+    # 把前者copy到后者中
     shutil.copy(simulator_path, running_sim_dir)
 options.simulator_dir = running_sim_dir
 
 common.load_defined_yamls()
 
+# 自动检测系统中可用的作业调度系统（如 Slurm、Torque/PBS）或回退到本地进程管理，并同时 验证 CUDA 编译器 nvcc 是否可用。
 # Test for the existance of a cluster management system
 job_submit_call = None
 job_template = None
