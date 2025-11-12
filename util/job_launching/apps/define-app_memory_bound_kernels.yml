@@ -1,6 +1,6 @@
 memory_bound_kernels:
-    exec_dir: "$GPUAPPS_ROOT/bin/$CUDA_VERSION/release/"
-    data_dirs: "$GPUAPPS_ROOT/data_dirs/"
+    exec_dir: "/home/lsc/HBF-LLM/gpu-app-collection/memory_bound_kernels/bin"
+    data_dirs: ""
     execs:
         - Softmax:
           - args: 16 512 
@@ -29,4 +29,4 @@ memory_bound_kernels:
         - RotaryEmb:
           - args: 4096 32 128 64
         - RotaryEmb:
-          - args: 8192 64 128 64       
+          - args: 8192 64 128 64
