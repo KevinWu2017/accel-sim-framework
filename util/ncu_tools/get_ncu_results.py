@@ -91,7 +91,7 @@ for bench in benchmarks:
             "benchmark": exe,
             "args": args,
             "metric_name": options.metric,
-            "metric_value": value,
+            "metric_value": value
         })
 
 # -------------------------------
