@@ -92,7 +92,6 @@ for bench in benchmarks:
             "args": args,
             "metric_name": options.metric,
             "metric_value": value,
-            "file": txt_files[0]
         })
 
 # -------------------------------
