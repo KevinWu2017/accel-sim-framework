@@ -98,7 +98,7 @@ for bench in benchmarks:
 # 输出 CSV
 # -------------------------------
 with open(output_csv, "w", newline="") as csvfile:
-    writer = csv.DictWriter(csvfile, fieldnames=["benchmark", "args", "metric_name", "metric_value", "file"])
+    writer = csv.DictWriter(csvfile, fieldnames=["benchmark", "args", "metric_name", "metric_value"])
     writer.writeheader()
     writer.writerows(results)
 
