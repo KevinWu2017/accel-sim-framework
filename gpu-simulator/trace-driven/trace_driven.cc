@@ -152,6 +152,7 @@ types_of_operands get_oprnd_type(op_type op, special_ops sp_op) {
   }
 }
 
+// 把一条从 trace 里读出来的 SASS 指令（inst_trace_t），解析并填充成模拟器内部真正执行用的 trace_warp_inst_t / warp_inst_t 对象。
 bool trace_warp_inst_t::parse_from_trace_struct(
     const inst_trace_t &trace,
     const std::unordered_map<std::string, OpcodeChar> *OpcodeMap,
@@ -160,15 +161,18 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   // fill the inst_t and warp_inst_t params
 
   // fill active mask
+  // 设置活跃线程掩码（SIMT 掩码）
   active_mask_t active_mask = trace.mask;
   set_active(active_mask);
 
   // fill and initialize common params
+  // 初始化通用字段（相当于“构造函数”）
   m_decoded = true;
   pc = (address_type)trace.m_pc;
 
   isize =
       16;  // starting from MAXWELL isize=16 bytes (including the control bytes)
+  // 并把所有寄存器 / 标志位 / 操作类型清零
   for (unsigned i = 0; i < MAX_OUTPUT_VALUES; i++) {
     out[i] = 0;
   }
@@ -190,14 +194,23 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   oprnd_type = UN_OP;
 
   // get the opcode
+  // opcode 字符串 → 枚举 → 功能分类
+  // "LDGSTS.E.BYPASS.LTC128B.128"
+  // → opcode1 = "LDGSTS"
   std::vector<std::string> opcode_tokens = trace.get_opcode_tokens();
   std::string opcode1 = opcode_tokens[0];
 
+  // 查 opcode 表
   std::unordered_map<std::string, OpcodeChar>::const_iterator it =
       OpcodeMap->find(opcode1);
   if (it != OpcodeMap->end()) {
+    // m_opcode 精确指令（OP_LDGSTS / OP_LDG / OP_FMA）
     m_opcode = it->second.opcode;
+
+    // op 大类（LOAD_OP / ALU_OP / BRANCH_OP）
     op = (op_type)(it->second.opcode_category);
+
+    // 用于功耗分析的一些元数据
     const std::unordered_map<unsigned, unsigned> *OpcPowerMap = &OpcodePowerMap;
     std::unordered_map<unsigned, unsigned>::const_iterator it2 =
         OpcPowerMap->find(m_opcode);
@@ -208,6 +221,8 @@ bool trace_warp_inst_t::parse_from_trace_struct(
               << " Opcode: " << opcode1 << std::endl;
     assert(0 && "undefined instruction");
   }
+
+  // 特殊指令细分（功耗建模用），只影响 power model，不影响功能。
   std::string opcode = trace.opcode;
   if (opcode1 == "MUFU") {  // Differentiate between different MUFU operations
                             // for power model
@@ -223,9 +238,11 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   }
 
   // fill regs information
+  // 填充寄存器信息（scoreboard / 依赖用）
   num_regs = trace.reg_srcs_num + trace.reg_dsts_num;
   num_operands = num_regs;
   outcount = trace.reg_dsts_num;
+  // 寄存器编号修正，因为 GPGPU-Sim 的 R0 保留。
   for (unsigned m = 0; m < trace.reg_dsts_num; ++m) {
     out[m] =
         trace.reg_dest[m] + 1;  // Increment by one because GPGPU-sim starts
@@ -241,9 +258,11 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   }
 
   // fill latency and initl
+  // 设置延迟和发射间隔（pipeline 参数）
   tconfig->set_latency(op, latency, initiation_interval);
 
   // fill addresses
+  // 填访存地址（memory trace replay 核心）
   if (trace.memadd_info != NULL) {
     data_size = trace.memadd_info->width;
     for (unsigned i = 0; i < warp_size(); ++i)
@@ -251,7 +270,9 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   }
 
   // handle special cases and fill memory space
+  // 巨关键：访存类型与空间解析（你现在最相关）
   switch (m_opcode) {
+    // 常量内存
     case OP_LDC:  // handle Load from Constant
       data_size = 4;
       memory_op = memory_load;
@@ -259,6 +280,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
       space.set_type(const_space);
       cache_op = CACHE_ALL;
       break;
+    // Global / Local / LDGSTS
     case OP_LDG:
     // LDGSTS is loading the values needed directly from the global memory to
     // shared memory. Before this feature, the values need to be loaded to
@@ -281,6 +303,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
         cache_op = CACHE_GLOBAL;
       }
       break;
+    // Store
     case OP_STG:
     case OP_STL:
       assert(data_size > 0);
@@ -291,6 +314,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
       else
         space.set_type(global_space);
       break;
+    // 原子操作
     case OP_ATOMG:
     case OP_RED:
     case OP_ATOM:
@@ -301,6 +325,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
       m_isatomic = true;
       cache_op = CACHE_GLOBAL;  // all the atomics should be done at L2
       break;
+    // Shared memory
     case OP_LDS:
       assert(data_size > 0);
       memory_op = memory_load;
@@ -321,6 +346,14 @@ bool trace_warp_inst_t::parse_from_trace_struct(
       assert(data_size > 0);
       space.set_type(shared_space);
       break;
+    /*
+      Generic LD/ST（老 PTX）
+      | 地址区间                         | 空间   |
+      | ------------------------------- | ------ |
+      | [shmem_base, local_base)        | shared |
+      | [local_base, local_base + size) | local  |
+      | else                            | global |
+    */
     case OP_ST:
     case OP_LD:
       assert(data_size > 0);
@@ -359,6 +392,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
       }
 
       break;
+    // Barrier
     case OP_BAR:
       // TO DO: fill this correctly
       bar_id = 0;
@@ -373,6 +407,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
     // LDGDEPBAR is to form a group containing the previous LDGSTS instructions
     // that have not been grouped yet. In the implementation, a group number
     // will be assigned once the instruction is met.
+    // LDGSTS 依赖屏障（Ampere+ 新指令）
     case OP_LDGDEPBAR:
       m_is_ldgdepbar = true;
       break;
@@ -386,6 +421,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
       m_is_depbar = true;
       m_depbar_group_no = trace.imm;
       break;
+    // FP16 吞吐建模
     case OP_HADD2:
     case OP_HADD2_32I:
     case OP_HFMA2:
@@ -402,7 +438,6 @@ bool trace_warp_inst_t::parse_from_trace_struct(
     default:
       break;
   }
-
   return true;
 }
 
