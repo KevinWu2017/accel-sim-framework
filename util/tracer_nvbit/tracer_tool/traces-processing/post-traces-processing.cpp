@@ -27,6 +27,8 @@ struct threadblock_info {
   }
 };
 
+
+// 一个指令字符串查重表，避免每条指令都复制字符串，省内存
 /// @brief There exist significant repetition in the trace. The WarpInstLUT
 /// registers recurrent trace fragments in a hash map. Strings (trace fragments)
 /// are mapped to a pointer to a unique copy of that string, which is guaranteed
@@ -95,6 +97,8 @@ int main(int argc, char **argv) {
   string kernellist_filepath;
   string filepath;
   bool is_per_core;
+
+  // 参数输入
   if (argc == 1) {
     cerr << "File path is missing\n";
     return 1;
@@ -113,8 +117,10 @@ int main(int argc, char **argv) {
   ifstream ifs;
   ofstream ofs;
 
+  // 支持输入：目录 或 单文件
   // We can now pass a directory or a file as the input argument
   std::filesystem::path p(filepath);
+  // 如果是目录
   if (std::filesystem::is_directory(p)) {
     for (const auto &entry : std::filesystem::directory_iterator(p)) {
       std::string filename = entry.path().filename();
@@ -122,21 +128,28 @@ int main(int argc, char **argv) {
         kernelslist_list.push_back(entry.path().string());
       }
     }
-  } else if (std::filesystem::is_regular_file(p)) {
+  }
+  // 如果是普通文件
+  else if (std::filesystem::is_regular_file(p)) {
     kernelslist_list.push_back(p);
   } else {
     cerr << "Invalid file path\n";
     return 1;
   }
 
+  // 逐个处理 kernelslist 文件
   for (auto kernellist_filepath : kernelslist_list) {
+    // 提取所在目录
     string directory(kernellist_filepath);
+    // 从路径中拿到目录部分
     const size_t last_slash_idx = directory.rfind('/');
     if (std::string::npos != last_slash_idx) {
       directory = directory.substr(0, last_slash_idx);
     }
 
+    // 打开输入文件 & 输出文件
     ifs.open(kernellist_filepath.c_str());
+    // 输出文件命名规则：
     // If we have only one context, name it kernelslist.g by default
     if (kernelslist_list.size() == 1 ||
         kernelslist_list[0] == kernellist_filepath)
@@ -149,18 +162,29 @@ int main(int argc, char **argv) {
       return 1;
     }
 
+    /*
+      逐行解析 kernelslist 内容
+        Memcpy HtoD ...
+        kernel test1.trace
+        kernel test2.trace.xz
+    */
     string line;
     string filepath;
     while (!ifs.eof()) {
       getline(ifs, line);
       if (line.empty())
         continue;
+      // 如果是 Memcpy 行
       else if (line.substr(0, 6) == "Memcpy") {
         ofs << line << endl;
-      } else if (line.substr(0, 6) == "kernel") {
+      } 
+      // 如果是 kernel 行
+      else if (line.substr(0, 6) == "kernel") {
         filepath = directory + "/" + line;
+        // 对kernel_trace做后处理
         group_per_block(filepath.c_str());
 
+        // 生成一个新的 .g trace 文件
         int _l = line.length();
         if (_l > 3 && line.substr(_l - 3, 3) == ".xz") {
           ofs << line.substr(0, _l - 3) << "g.xz" << endl;
@@ -179,15 +203,18 @@ int main(int argc, char **argv) {
   return 0;
 }
 
+// 把一个 原始 kernel trace（逐 warp / 逐指令流）重组为“按 thread block 分组”的 trace，并且支持直接处理 .trace 或 .trace.xz 压缩文件。
 // This function redirects stdin and stdout for trace processing.
 // For error/warning/info message to print to the terminal, always use the
 // stderr stream. The io redirection will be restored by the time the function
 // returns.
 void group_per_block(const char *filepath) {
+  // 备份原始 stdin/stdout
   preserved_stdin_fileno = dup(STDIN_FILENO);
   preserved_stdout_fileno = dup(STDOUT_FILENO);
 
   string filepath_str{filepath};
+  // 一个指令字符串查重表，避免每条指令都复制字符串，省内存
   WarpInstLUT warp_inst_lut;
 
   pid_t sink_process_pid = 0;
@@ -201,6 +228,8 @@ void group_per_block(const char *filepath) {
 
   bool input_file_is_xz = false;
   int _l = filepath_str.length();
+
+  // 判断输入类型（.xz or .trace）
   if (_l > 3 && filepath_str.substr(_l - 3, 3) == ".xz") {
     // kernel-1.trace.xz --(xz -dc)--> f --(xz -1 -T0)--> kernel-1.traceg.xz
     input_file_is_xz = true;
@@ -225,6 +254,7 @@ void group_per_block(const char *filepath) {
   // cerr << "source cmd is "<<trace_source_cmd<<"\n";
   // cerr << "sink cmd is "<<trace_sink_cmd<<"\n";
 
+  // fork 子进程作为“trace 源”
   // fork a child process as the trace source
   if (pipe(source_pipe_fd) != 0) {
     cerr << "Failed to create pipe\n";
@@ -258,6 +288,7 @@ void group_per_block(const char *filepath) {
     exit(1);
   }
 
+  // fork 子进程作为“trace 汇”
   // fork a child process as the trace sink
   if (pipe(sink_pipe_fd) != 0) {
     cerr << "Failed to create pipe\n";
@@ -286,6 +317,7 @@ void group_per_block(const char *filepath) {
 
   cerr << "Processing file " << filepath << endl;
 
+  // 每一个元素 = 一个 thread block
   vector<threadblock_info> insts;
   unsigned grid_dim_x, grid_dim_y, grid_dim_z, tb_dim_x, tb_dim_y, tb_dim_z;
   unsigned tb_id_x, tb_id_y, tb_id_z, tb_id, warpid_tb;
@@ -295,21 +327,26 @@ void group_per_block(const char *filepath) {
   string string1, string2;
   bool found_grid_dim = false, found_block_dim = false;
 
+  // 用来过滤 LDGSTS 指令的一半（因为 trace 中一条 LDGSTS 会拆成两个访存记录）
   // Add a flag for LDGSTS instruction to indicate which one to remove
   vector<vector<bool>> ldgsts_flags; // true to remove, false to not
 
+  // 清理 stdin 状态：防止连续处理多个 kernel 时 EOF 状态残留。
   // Important... without clear(), cin.eof() may evaluate to true on the second
   // kernel
   cin.clear();
   clearerr(stdin);
+  // 逐行读取 trace
   while (!cin.eof()) {
     getline(cin, line);
 
+    // 空行 / 注释行：原样写入
     if (line.length() == 0 || line[0] == '#') {
       cout << line << endl;
       continue;
     }
 
+    // 配置行（-grid / -block）
     else if (line[0] == '-') {
       ss.str(line);
       ss.ignore();
@@ -327,11 +364,13 @@ void group_per_block(const char *filepath) {
       }
 
       if (found_grid_dim && found_block_dim) {
+        // 根据grid的维度算出一共有多少个block并分配空间
         insts.resize(grid_dim_x * grid_dim_y * grid_dim_z);
 
         // Size the ldgsts_flags vector
         ldgsts_flags.resize(grid_dim_x * grid_dim_y * grid_dim_z);
 
+        // 总warp的数量
         for (unsigned i = 0; i < insts.size(); ++i) {
           insts[i].warp_insts_array.resize(
               ceil(float(tb_dim_x * tb_dim_y * tb_dim_z) / 32));
@@ -349,6 +388,7 @@ void group_per_block(const char *filepath) {
     } else {
 
       ss.str(line);
+      // 解析 block + warp id
       ss >> tb_id_x >> tb_id_y >> tb_id_z >> warpid_tb;
       tb_id =
           tb_id_z * grid_dim_y * grid_dim_x + tb_id_y * grid_dim_x + tb_id_x;
@@ -368,13 +408,19 @@ void group_per_block(const char *filepath) {
       string opcode, temp;
       unsigned dest_num;
       opcode_ss << rest_of_line;
+
+      // 跳过两个字段
       for (int i = 0; i < 2; i++) {
         opcode_ss >> temp;
       }
+      // 读目的寄存器个数
       opcode_ss >> dest_num;
+
+      // 跳过一个字段
       for (unsigned i = 0; i < dest_num; i++) {
         opcode_ss >> temp;
       }
+      // 解析opcode
       opcode_ss >> opcode;
 
       // Look up the warp inst table to see if this instruction has been
@@ -383,10 +429,10 @@ void group_per_block(const char *filepath) {
       if (!inst_ptr)
         inst_ptr = warp_inst_lut.register_new_entry(rest_of_line);
 
+      // 同一条LDGSTS指令，会包含shared memory和global memory的，在这里舍弃了shared memory的，保留了global memory的
       // One actual LDGSTS instruction includes 2 LDGSTS instructions in the
       // trace, because it has two memory references. This is trying to remove
       // the one with the shared memory address.
-
       if (opcode.find("LDGSTS") != string::npos) {
         if (!ldgsts_flags[tb_id][warpid_tb]) {
           insts[tb_id].warp_insts_array[warpid_tb].push_back(inst_ptr);
@@ -398,6 +444,7 @@ void group_per_block(const char *filepath) {
     }
   }
 
+  // 重新输出trace(以block为粒度) 
   for (unsigned i = 0; i < insts.size(); ++i) {
     // ofs<<string<<"\n";
     if (insts[i].initialized && insts[i].warp_insts_array.size() > 0) {
