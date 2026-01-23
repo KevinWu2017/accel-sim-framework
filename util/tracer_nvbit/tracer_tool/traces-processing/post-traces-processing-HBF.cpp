@@ -1,0 +1,651 @@
+#include <deque>
+#include <fstream>
+#include <iostream>
+#include <math.h>
+#include <memory>
+#include <sstream>
+#include <stdio.h>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include <errno.h>
+#include <signal.h>
+#include <unistd.h>
+
+#include <filesystem>
+
+#include <cstdint>
+#include <algorithm>
+
+using namespace std;
+/////////////////////// HBF /////////////////////////
+// 存储weight的起始地址和结束地址
+struct WeightRange {
+    uint64_t start;   // inclusive
+    uint64_t end;     // exclusive
+    std::string name;
+    size_t size;
+
+    // 用于二分查找：按 start 排序
+    bool operator<(const WeightRange& other) const {
+        return start < other.start;
+    }
+};
+
+class WeightAddressMap {
+private:
+    std::vector<WeightRange> ranges_;  // 类成员变量
+
+public:
+    // 构造函数：可选，支持直接加载文件
+    WeightAddressMap() = default;
+
+    explicit WeightAddressMap(const std::string& filepath) {
+        load(filepath);
+    }
+
+    // 加载 weight map 文件
+    bool load(const std::string& filepath) {
+        std::ifstream file(filepath);
+        if (!file.is_open()) {
+            std::cerr << "⚠️ Warning: Cannot open weight map file: " << filepath << std::endl;
+            return false;
+        }
+
+        ranges_.clear();
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+
+            std::istringstream iss(line);
+            std::string start_hex, end_hex, name, size_str;
+
+            if (!(iss >> start_hex >> end_hex >> name >> size_str)) {
+                std::cerr << "⚠️ Warning: Invalid line in weight map: " << line << std::endl;
+                continue;
+            }
+
+            try {
+                uint64_t start = std::stoull(start_hex, nullptr, 16);
+                uint64_t end = std::stoull(end_hex, nullptr, 16);
+                size_t size = std::stoull(size_str);
+                ranges_.push_back({start, end, name, size});
+            } catch (const std::exception& e) {
+                std::cerr << "⚠️ Warning: Failed to parse line: " << line << " (" << e.what() << ")\n";
+                continue;
+            }
+        }
+
+        std::sort(ranges_.begin(), ranges_.end());
+        file.close();
+        return true;
+    }
+
+    // 判断地址是否属于任意权重区间
+    bool isWeightAddress(uint64_t addr) const {
+        auto it = std::upper_bound(ranges_.begin(), ranges_.end(), addr,
+            [](uint64_t a, const WeightRange& r) {
+                return a < r.start;
+            });
+
+        if (it != ranges_.begin()) {
+            --it;
+            if (addr >= it->start && addr < it->end) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 可选：获取总条目数（用于调试）
+    size_t size() const {
+        return ranges_.size();
+    }
+
+    // 可选：提供只读访问（如果以后需要查具体名字）
+    const std::vector<WeightRange>& getRanges() const {
+        return ranges_;
+    }
+};
+
+WeightAddressMap weightMap;
+
+/////////////////////////////////////////////////////
+struct threadblock_info {
+  bool initialized;
+  unsigned tb_id_x, tb_id_y, tb_id_z;
+  vector<deque<const string *>> warp_insts_array;
+  threadblock_info() {
+    initialized = false;
+    tb_id_x = tb_id_y = tb_id_z = 0;
+  }
+};
+
+
+// 一个指令字符串查重表，避免每条指令都复制字符串，省内存
+/// @brief There exist significant repetition in the trace. The WarpInstLUT
+/// registers recurrent trace fragments in a hash map. Strings (trace fragments)
+/// are mapped to a pointer to a unique copy of that string, which is guaranteed
+/// to live throughout the scope of the lifetime of this WarpInstLUT.
+struct WarpInstLUT {
+  // A mapping from "raw instruction string" to "a pointer to a global copy of
+  // that string". For any element (x->y) of this map, *y==x holds.
+  unordered_map<string, unique_ptr<string>> registration_table;
+
+  /// @brief Is a string already registered?
+  /// @param s The probing string.
+  /// @return nullptr if the probing string does not exist in the look up table.
+  /// Otherwise, a const pointer to a unique copy of that string.
+  const string *lookup_entry(const string s) const {
+    const auto it = registration_table.find(s);
+
+    // not registered
+    if (it == registration_table.end()) {
+      return nullptr;
+    } else {
+      return it->second.get();
+    }
+  }
+
+  /// @brief Add a string to the look up table.
+  /// @param s The string to be added.
+  /// @return A const pointer to the unique copy of the string.
+  const string *register_new_entry(const string s) {
+    // Check if the string is already in the LUT.
+    const string *entry_ptr = lookup_entry(s);
+    if (entry_ptr) {
+      // just in case a rare hash collision happens, we panic
+      if (s != *entry_ptr) {
+        cerr << "FATAL: new string insertion " << s
+             << "collides with the hash of a different string in the "
+                "registration table "
+             << *entry_ptr << "\n";
+        abort();
+      }
+      return entry_ptr;
+    }
+
+    // Create a new string
+    auto new_string_ptr = std::make_unique<string>(s);
+    entry_ptr = new_string_ptr.get();
+    registration_table.insert({s, std::move(new_string_ptr)});
+
+    return entry_ptr;
+  }
+};
+
+void group_per_block(const char *filepath);
+void group_per_core(const char *filepath);
+
+// This program works by redirecting the stdin/stdout to child processes. The
+// stdin is piped to a process that reads from disk the input trace file. The
+// stdout is piped to a process that writes to disk the post-process trace. We
+// should preserve the original file descriptors for stdin/stdout before doing
+// redirections.
+int preserved_stdin_fileno;
+int preserved_stdout_fileno;
+
+std::vector<std::string> kernelslist_list;
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+int main(int argc, char **argv) {
+  string kernellist_filepath;
+  string filepath;
+  string weightsAddress_filepath;
+  bool is_per_core;
+
+  // 参数输入
+  if (argc == 1) {
+    cerr << "File path is missing\n";
+    return 1;
+  } else if (argc == 2) {
+    filepath = argv[1];
+    is_per_core = true;
+
+  } else if (argc == 3) {
+    filepath = argv[1];
+    is_per_core = bool(argv[2]);
+  } else {
+    cerr << "Too Many Arguemnts!\n";
+    return 1;
+  }
+
+  ifstream ifs;
+  ofstream ofs;
+
+  // 支持输入：目录 或 单文件
+  // We can now pass a directory or a file as the input argument
+  std::filesystem::path p(filepath);
+  // 如果是目录
+  if (std::filesystem::is_directory(p)) {
+    for (const auto &entry : std::filesystem::directory_iterator(p)) {
+      std::string filename = entry.path().filename();
+      if (filename.find("kernelslist") != std::string::npos) {
+        kernelslist_list.push_back(entry.path().string());
+      }
+      
+      // HBF：如果是weightsAddress
+      if (filename.find("weightsAddress") != std::string::npos) {
+        weightsAddress_filepath = entry.path().string();
+        weightMap.load(weightsAddress_filepath);
+        cout << "success load weightRange!" << endl;
+      }
+    }
+  }
+  // 如果是普通文件
+  else if (std::filesystem::is_regular_file(p)) {
+    kernelslist_list.push_back(p);
+  } else {
+    cerr << "Invalid file path\n";
+    return 1;
+  }
+
+  // 获取weightsAddress
+
+  // 逐个处理 kernelslist 文件
+  for (auto kernellist_filepath : kernelslist_list) {
+    // 提取所在目录
+    string directory(kernellist_filepath);
+    // 从路径中拿到目录部分
+    const size_t last_slash_idx = directory.rfind('/');
+    if (std::string::npos != last_slash_idx) {
+      directory = directory.substr(0, last_slash_idx);
+    }
+
+    // 打开输入文件 & 输出文件
+    ifs.open(kernellist_filepath.c_str());
+    // 输出文件命名规则：
+    // If we have only one context, name it kernelslist.g by default
+    if (kernelslist_list.size() == 1 ||
+        kernelslist_list[0] == kernellist_filepath)
+      ofs.open((string(directory) + "/kernelslist.gw").c_str());
+    else
+      ofs.open((string(kernellist_filepath) + ".gw").c_str());
+
+    if (!ifs.is_open()) {
+      cerr << "Unable to open file: " << kernellist_filepath << endl;
+      return 1;
+    }
+
+    /*
+      逐行解析 kernelslist 内容
+        Memcpy HtoD ...
+        kernel test1.trace
+        kernel test2.trace.xz
+    */
+    string line;
+    string filepath;
+    while (!ifs.eof()) {
+      getline(ifs, line);
+      if (line.empty())
+        continue;
+      // 如果是 Memcpy 行
+      else if (line.substr(0, 6) == "Memcpy") {
+        ofs << line << endl;
+      } 
+      // 如果是 kernel 行
+      else if (line.substr(0, 6) == "kernel") {
+        filepath = directory + "/" + line;
+        // 对kernel_trace做后处理
+        group_per_block(filepath.c_str());
+
+        // 生成一个新的 .g trace 文件
+        int _l = line.length();
+        if (_l > 3 && line.substr(_l - 3, 3) == ".xz") {
+          ofs << line.substr(0, _l - 3) << "gw.xz" << endl;
+        } else {
+          ofs << line + "gw" << endl;
+        }
+      } else {
+        cerr << "Undefined command: " << line << endl;
+        return 1;
+      }
+    }
+
+    ifs.close();
+    ofs.close();
+  }
+  return 0;
+}
+
+// 把一个 原始 kernel trace（逐 warp / 逐指令流）重组为“按 thread block 分组”的 trace，并且支持直接处理 .trace 或 .trace.xz 压缩文件。
+// This function redirects stdin and stdout for trace processing.
+// For error/warning/info message to print to the terminal, always use the
+// stderr stream. The io redirection will be restored by the time the function
+// returns.
+void group_per_block(const char *filepath) {
+  // 备份原始 stdin/stdout
+  preserved_stdin_fileno = dup(STDIN_FILENO);
+  preserved_stdout_fileno = dup(STDOUT_FILENO);
+
+  string filepath_str{filepath};
+  // 一个指令字符串查重表，避免每条指令都复制字符串，省内存
+  WarpInstLUT warp_inst_lut;
+
+  pid_t sink_process_pid = 0;
+  string trace_sink_cmd;
+  int sink_pipe_fd[2];
+
+  pid_t source_process_pid = 0;
+  string trace_source_cmd;
+  int source_pipe_fd[2];
+  string output_filepath;
+
+  bool input_file_is_xz = false;
+  int _l = filepath_str.length();
+
+  // 判断输入类型（.xz or .trace）
+  if (_l > 3 && filepath_str.substr(_l - 3, 3) == ".xz") {
+    // kernel-1.trace.xz --(xz -dc)--> f --(xz -1 -T0)--> kernel-1.traceg.xz
+    input_file_is_xz = true;
+    output_filepath = filepath_str.substr(0, _l - 3) + "gw.xz";
+    trace_source_cmd = "xz -dc " + filepath_str;
+    trace_sink_cmd = "xz -1 -T0 > " + output_filepath;
+  } else if (_l > 6 && filepath_str.substr(_l - 6, 6) == ".trace") {
+    // kernel-2.trace --(cat)--> f --(cat)--> kernel-2.traceg
+    input_file_is_xz = false;
+    output_filepath = filepath_str + "gw";
+    trace_source_cmd = "cat " + filepath_str;
+    trace_sink_cmd = "cat > " + output_filepath;
+  } else {
+    cerr << "Only support xz or raw text format. Unable to process - and "
+            "skipping - trace file "
+         << filepath_str << endl;
+    close(preserved_stdin_fileno);
+    close(preserved_stdout_fileno);
+    return;
+  }
+
+  // cerr << "source cmd is "<<trace_source_cmd<<"\n";
+  // cerr << "sink cmd is "<<trace_sink_cmd<<"\n";
+
+  // fork 子进程作为“trace 源”
+  // fork a child process as the trace source
+  if (pipe(source_pipe_fd) != 0) {
+    cerr << "Failed to create pipe\n";
+    perror("pipe");
+    exit(1);
+  }
+  source_process_pid = fork();
+  if (source_process_pid == 0) {
+    //  child process
+    close(source_pipe_fd[0]);
+    dup2(source_pipe_fd[1], STDOUT_FILENO);
+
+    // When using GDB, sending Ctrl+C to the program will send a SIGINT signal
+    // to the child process as well, subsequently causing it to terminate. To
+    // avoid this, we let the child process ignore (SIG_IGN) the SIGINT signal.
+    // Reference:
+    // https://stackoverflow.com/questions/38404925/gdb-interrupt-running-process-without-killing-child-processes
+    signal(SIGINT, SIG_IGN);
+
+    execle("/bin/sh", "sh", "-c", trace_source_cmd.c_str(), NULL, environ);
+    perror("execle"); // child shouldn't reach here if all is well.
+    exit(1);
+  } else if (source_process_pid > 0) {
+    // parent process - the trace post processor
+    // stdin is now redirected to the read end of the source_pipe
+    close(source_pipe_fd[1]);
+    int r = dup2(source_pipe_fd[0], STDIN_FILENO);
+  } else {
+    cerr << "Failed to fork data source process\n";
+    perror("fork");
+    exit(1);
+  }
+
+  // fork 子进程作为“trace 汇”
+  // fork a child process as the trace sink
+  if (pipe(sink_pipe_fd) != 0) {
+    cerr << "Failed to create pipe\n";
+    perror("pipe");
+    exit(1);
+  }
+  sink_process_pid = fork();
+  if (sink_process_pid == 0) {
+    // child process
+    close(sink_pipe_fd[1]);
+    dup2(sink_pipe_fd[0], STDIN_FILENO);
+    signal(SIGINT, SIG_IGN); // ignore SIGINT
+    execle("/bin/sh", "sh", "-c", trace_sink_cmd.c_str(), NULL, environ);
+    perror("execle"); // child shouldn't reach here if all is well.
+    exit(1);
+  } else if (sink_process_pid > 0) {
+    // parent process - the trace post processor
+    // stdout is now redirected to the write end of the sink_pipe
+    close(sink_pipe_fd[0]);
+    int r = dup2(sink_pipe_fd[1], STDOUT_FILENO);
+  } else {
+    cerr << "Failed to fork data sink process\n";
+    perror("fork");
+    exit(1);
+  }
+
+  cerr << "Processing file " << filepath << endl;
+
+  // 每一个元素 = 一个 thread block
+  vector<threadblock_info> insts;
+  unsigned grid_dim_x, grid_dim_y, grid_dim_z, tb_dim_x, tb_dim_y, tb_dim_z;
+  unsigned tb_id_x, tb_id_y, tb_id_z, tb_id, warpid_tb;
+  unsigned lineinfo, linenum;
+  string line;
+  stringstream ss;
+  string string1, string2;
+  bool found_grid_dim = false, found_block_dim = false;
+
+  // 用来过滤 LDGSTS 指令的一半（因为 trace 中一条 LDGSTS 会拆成两个访存记录）
+  // Add a flag for LDGSTS instruction to indicate which one to remove
+  vector<vector<bool>> ldgsts_flags; // true to remove, false to not
+
+  // 清理 stdin 状态：防止连续处理多个 kernel 时 EOF 状态残留。
+  // Important... without clear(), cin.eof() may evaluate to true on the second
+  // kernel
+  cin.clear();
+  clearerr(stdin);
+  // 逐行读取 trace
+  while (!cin.eof()) {
+    getline(cin, line);
+
+    // 空行 / 注释行：原样写入
+    if (line.length() == 0 || line[0] == '#') {
+      cout << line << endl;
+      continue;
+    }
+
+    // 配置行（-grid / -block）
+    else if (line[0] == '-') {
+      ss.str(line);
+      ss.ignore();
+      ss >> string1 >> string2;
+      if (string1 == "grid" && string2 == "dim") {
+        sscanf(line.c_str(), "-grid dim = (%d,%d,%d)", &grid_dim_x, &grid_dim_y,
+               &grid_dim_z);
+        found_grid_dim = true;
+      } else if (string1 == "block" && string2 == "dim") {
+        sscanf(line.c_str(), "-block dim = (%d,%d,%d)", &tb_dim_x, &tb_dim_y,
+               &tb_dim_z);
+        found_block_dim = true;
+      } else if (string1 == "enable" && string2 == "lineinfo") {
+        sscanf(line.c_str(), "-enable lineinfo = %d", &lineinfo);
+      }
+
+      if (found_grid_dim && found_block_dim) {
+        // 根据grid的维度算出一共有多少个block并分配空间
+        insts.resize(grid_dim_x * grid_dim_y * grid_dim_z);
+
+        // Size the ldgsts_flags vector
+        ldgsts_flags.resize(grid_dim_x * grid_dim_y * grid_dim_z);
+
+        // 总warp的数量
+        for (unsigned i = 0; i < insts.size(); ++i) {
+          insts[i].warp_insts_array.resize(
+              ceil(float(tb_dim_x * tb_dim_y * tb_dim_z) / 32));
+
+          // Size the ldgsts_flags vector
+          ldgsts_flags[i].resize(
+              ceil(float(tb_dim_x * tb_dim_y * tb_dim_z) / 32));
+          for (unsigned j = 0; j < ldgsts_flags[i].size(); j++) {
+            ldgsts_flags[i][j] = true;
+          }
+        }
+      }
+      cout << line << endl;
+      continue;
+    } else {
+
+      ss.str(line);
+      // 解析 block + warp id
+      ss >> tb_id_x >> tb_id_y >> tb_id_z >> warpid_tb;
+      tb_id =
+          tb_id_z * grid_dim_y * grid_dim_x + tb_id_y * grid_dim_x + tb_id_x;
+      if (!insts[tb_id].initialized) {
+        insts[tb_id].tb_id_x = tb_id_x;
+        insts[tb_id].tb_id_y = tb_id_y;
+        insts[tb_id].tb_id_z = tb_id_z;
+        insts[tb_id].initialized = true;
+      }
+      // ss.ignore(); //remove the space
+      // rest_of_line.clear();
+      // getline(ss, rest_of_line); //get rest of the string!
+      string rest_of_line(ss.str().substr(ss.tellg() + 1));
+
+      // Ni: ignore the shmem LDGSTS instruction
+      stringstream opcode_ss;
+      string opcode, temp;
+      unsigned dest_num;
+      opcode_ss << rest_of_line;
+
+      // 跳过两个字段
+      for (int i = 0; i < 2; i++) {
+        opcode_ss >> temp;
+      }
+      // 读目的寄存器个数
+      opcode_ss >> dest_num;
+
+      // 跳过一个字段
+      for (unsigned i = 0; i < dest_num; i++) {
+        opcode_ss >> temp;
+      }
+      // 解析opcode
+      opcode_ss >> opcode;
+
+      // Look up the warp inst table to see if this instruction has been
+      // registered. If yes, we just copy the pointer to that string.
+      const string *inst_ptr = warp_inst_lut.lookup_entry(rest_of_line);
+      if (!inst_ptr)
+        inst_ptr = warp_inst_lut.register_new_entry(rest_of_line);
+
+      // 同一条LDGSTS指令，会包含shared memory和global memory的，在这里舍弃了shared memory的，保留了global memory的
+      // One actual LDGSTS instruction includes 2 LDGSTS instructions in the
+      // trace, because it has two memory references. This is trying to remove
+      // the one with the shared memory address.
+      if (opcode.find("LDGSTS") != string::npos) {
+        if (!ldgsts_flags[tb_id][warpid_tb]) {
+          // 加入权重判断逻辑
+          if (weightMap.size()>0) {
+            // 找到操作的地址
+            std::string token;
+            uint64_t mem_addr = 0;
+            bool found_hex_addr = false;
+            while (opcode_ss >> token) {
+              if (token.size() > 2 && token[0] == '0' && token[1] == 'x') {
+                mem_addr = std::stoull(token, nullptr, 16);
+                found_hex_addr = true;
+                break;
+              }
+            }
+            // 判断是否是权重
+            if (found_hex_addr && weightMap.isWeightAddress(mem_addr)) {
+              // 构造新的 opcode：原 opcode + ".WEIGHT"
+              std::string new_opcode = opcode + ".WEIGHT";
+
+              // 重建整行指令字符串（替换原 opcode）
+              std::istringstream rebuild_ss(rest_of_line);
+              std::ostringstream new_line_ss;
+              std::string field;
+              int field_idx = 0;
+              bool replaced = false;
+
+              while (rebuild_ss >> field) {
+                if (!replaced && field == opcode) {
+                  new_line_ss << new_opcode;
+                  replaced = true;
+                } else {
+                  new_line_ss << field;
+              }
+                if (rebuild_ss.peek() != EOF) new_line_ss << " ";
+              } 
+
+              std::string new_rest_of_line = new_line_ss.str();
+
+              // 注册新字符串（可能已存在，LUT 会处理）
+              const string* new_inst_ptr = warp_inst_lut.lookup_entry(new_rest_of_line);
+              if (!new_inst_ptr) {
+                new_inst_ptr = warp_inst_lut.register_new_entry(new_rest_of_line);
+              }
+
+              // 替换 inst_ptr 为新的带 .WEIGHT 的版本
+              inst_ptr = new_inst_ptr;
+            }
+          }
+
+          insts[tb_id].warp_insts_array[warpid_tb].push_back(inst_ptr);
+        }
+        ldgsts_flags[tb_id][warpid_tb] = !ldgsts_flags[tb_id][warpid_tb];
+      } else {
+        insts[tb_id].warp_insts_array[warpid_tb].push_back(inst_ptr);
+      }
+    }
+  }
+
+  // 重新输出trace(以block为粒度) 
+  for (unsigned i = 0; i < insts.size(); ++i) {
+    // ofs<<string<<"\n";
+    if (insts[i].initialized && insts[i].warp_insts_array.size() > 0) {
+      cout << "\n"
+           << "#BEGIN_TB"
+           << "\n";
+      cout << "\n"
+           << "thread block = " << insts[i].tb_id_x << "," << insts[i].tb_id_y
+           << "," << insts[i].tb_id_z << "\n";
+    } else {
+      cerr << "Warning: Thread block " << insts[i].tb_id_x << ","
+           << insts[i].tb_id_y << "," << insts[i].tb_id_z << " is empty"
+           << "\n";
+      continue;
+    }
+    for (unsigned j = 0; j < insts[i].warp_insts_array.size(); ++j) {
+      cout << "\n"
+           << "warp = " << j << "\n";
+      cout << "insts = " << insts[i].warp_insts_array[j].size() << "\n";
+      if (insts[i].warp_insts_array[j].size() == 0) {
+        cerr << "Warning: Warp " << j << " in thread block" << insts[i].tb_id_x
+             << "," << insts[i].tb_id_y << "," << insts[i].tb_id_z
+             << " is empty"
+             << "\n";
+      }
+      for (auto it = insts[i].warp_insts_array[j].cbegin();
+           it != insts[i].warp_insts_array[j].cend(); ++it) {
+        // dereference once: const string*
+        // dereference twice: const string
+        cout << **it << "\n";
+      }
+    }
+    cout << endl << "#END_TB" << endl;
+  }
+
+  close(source_pipe_fd[0]);
+  close(source_pipe_fd[1]);
+  close(sink_pipe_fd[0]);
+  close(sink_pipe_fd[1]);
+
+  // restore stdin/stdout file descriptor
+  dup2(preserved_stdin_fileno, STDIN_FILENO);
+  dup2(preserved_stdout_fileno, STDOUT_FILENO);
+  close(preserved_stdin_fileno);
+  close(preserved_stdout_fileno);
+}
+
+void group_per_core(const char *filepath) {
+
+  // TO DO
+}
