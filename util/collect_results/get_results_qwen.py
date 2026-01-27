@@ -42,25 +42,53 @@ def process_single_run(run_dir):
         return False
 
     # Step 2: Extract kernel names from A100-SASS/traces/
+    # sass_dir = os.path.join(run_dir, "A100_simpleDram_Latency160_100_100-SASS")
     sass_dir = os.path.join(run_dir, "A100-SASS")
     traces_dir = os.path.join(sass_dir, "traces")
     kernel_names = []
 
-    kernelslist_path = os.path.join(traces_dir, "kernelslist.g")
-    if not os.path.isfile(kernelslist_path):
-        print(f"  ⚠️ kernelslist.g not found at {kernelslist_path}")
+    # 支持多种 kernelslist 文件名（按优先级顺序）
+    kernelslist_candidates = [
+        "kernelslist.gw",   # 新格式（带权重？）
+        "kernelslist.g",    # 原始格式
+    ]
+
+    kernelslist_path = None
+    for candidate in kernelslist_candidates:
+        path = os.path.join(traces_dir, candidate)
+        if os.path.isfile(path):
+            kernelslist_path = path
+            break
+
+    if kernelslist_path is None:
+        print(f"  ⚠️ No kernelslist file found in {traces_dir} (tried: {kernelslist_candidates})")
+        simulated_kernels = []
     else:
         simulated_kernels = []
         try:
             with open(kernelslist_path, 'r') as f:
                 for line in f:
                     line = line.strip()
-                    if line and line.endswith('.traceg.xz'):
+                    if not line:
+                        continue
+                    # 支持 .traceg.xz, .tracegw.xz, .trace.xz
+                    if line.endswith('.tracegw.xz'):
+                        base_name = line[:-len('.tracegw.xz')]
+                    elif line.endswith('.traceg.xz'):
                         base_name = line[:-len('.traceg.xz')]
-                        simulated_kernels.append(base_name)
-            print(f"  Loaded {len(simulated_kernels)} kernels from kernelslist.g")
+                    elif line.endswith('.trace.xz'):
+                        base_name = line[:-len('.trace.xz')]
+                    else:
+                        # fallback: remove any .xz and last extension
+                        base_name = line
+                        if base_name.endswith('.xz'):
+                            base_name = base_name[:-3]
+                        if '.' in base_name:
+                            base_name = base_name.rsplit('.', 1)[0]
+                    simulated_kernels.append(base_name)
+            print(f"  Loaded {len(simulated_kernels)} kernels from {os.path.basename(kernelslist_path)}")
         except Exception as e:
-            print(f"  ⚠️ Error reading kernelslist.g: {e}")
+            print(f"  ⚠️ Error reading {kernelslist_path}: {e}")
             simulated_kernels = []
 
         # Find stats_ctx_* file
@@ -88,10 +116,13 @@ def process_single_run(run_dir):
                         kernel_name = parts[1].split(',')[0].strip()
 
                         base = trace_filename
-                        if base.endswith('.trace.xz'):
-                            base = base[:-len('.trace.xz')]
+                        # 同样支持 .tracegw.xz, .traceg.xz, .trace.xz
+                        if base.endswith('.tracegw.xz'):
+                            base = base[:-len('.tracegw.xz')]
                         elif base.endswith('.traceg.xz'):
                             base = base[:-len('.traceg.xz')]
+                        elif base.endswith('.trace.xz'):
+                            base = base[:-len('.trace.xz')]
                         elif base.endswith('.xz'):
                             base = base.rsplit('.', 1)[0]
 
@@ -114,7 +145,14 @@ def process_single_run(run_dir):
         "A100_simpleDram_Latency160_300-SASS",
         "A100_simpleDram_Latency160_400-SASS",
         "A100_simpleDram_Latency160_500-SASS",
-        "A100_simpleDram_Latency160_1000-SASS"
+        "A100_simpleDram_Latency160_1000-SASS",
+
+        "A100_simpleDram_Latency160_100_100-SASS",
+        "A100_simpleDram_Latency160_100_200-SASS",
+        "A100_simpleDram_Latency160_100_300-SASS",
+        "A100_simpleDram_Latency160_100_400-SASS",
+        "A100_simpleDram_Latency160_100_500-SASS",
+        "A100_simpleDram_Latency160_100_1000-SASS",
     ]
 
     valid_configs = []

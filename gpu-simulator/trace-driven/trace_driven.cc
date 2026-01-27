@@ -201,7 +201,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   std::string opcode1 = opcode_tokens[0];
 
   // hbf 判断
-  on_hbf = (trace.opcode.find(".WEIGHT") != std::string::npos);
+  fetch_from_hbf = (trace.opcode.find(".WEIGHT") != std::string::npos);
 
   // 查 opcode 表
   std::unordered_map<std::string, OpcodeChar>::const_iterator it =
