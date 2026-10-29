@@ -55,7 +55,7 @@ OBJS = $(CSRCS:%.cc=$(BUILD_DIR)/%.o)
 trace-driven:$(OBJS)
 
 $(BUILD_DIR)/%.o: %.cc
-	$(CXX) $(OPTFLAGS) $(CXXFLAGS) -I$(CUDA_INSTALL_PATH)/include -I. -I$(GPGPUSIM_ROOT)/libcuda -I$(GPGPUSIM_ROOT)/src -c $*.cc -o $(BUILD_DIR)/$*.o
+	$(CXX) $(OPTFLAGS) $(CXXFLAGS) -I$(CUDA_INSTALL_PATH)/include -I. -I../../util/tracer_nvbit/tracer_tool -I$(GPGPUSIM_ROOT)/libcuda -I$(GPGPUSIM_ROOT)/src -c $*.cc -o $(BUILD_DIR)/$*.o
 
 $(BUILD_DIR)/trace-driven.Makefile.makedepend: depend
 

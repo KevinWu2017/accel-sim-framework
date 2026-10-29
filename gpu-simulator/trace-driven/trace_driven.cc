@@ -294,6 +294,7 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   std::vector<std::string> opcode_tokens = trace.get_opcode_tokens();
   const std::string &opcode1 = opcode_tokens[0];
   const std::string &opcode = trace.opcode;
+  fetch_from_hbf = opcode.find(".WEIGHT") != std::string::npos;
 
   // Set instruction operand type based on the opcode for all instructions
   std::unordered_map<std::string, OpcodeChar>::const_iterator it =

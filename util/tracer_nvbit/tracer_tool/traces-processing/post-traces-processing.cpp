@@ -23,6 +23,7 @@
 #include <zstd.h>
 
 #include "../tracez_format.h"
+#include "weight_address_map.h"
 
 using namespace std;
 
@@ -97,7 +98,8 @@ struct WarpInstLUT {
   }
 };
 
-void group_per_block(const string &filepath, bool use_tracez);
+void group_per_block(const string &filepath, bool use_tracez,
+                     const WeightAddressMap *weight_map);
 void group_per_core(const char *filepath);
 
 // Mutex for thread-safe stderr output
@@ -113,10 +115,12 @@ class ThreadPool {
   bool stop = false;
   size_t in_flight = 0; // tasks being processed + tasks in queue
   bool m_use_tracez = false;
+  const WeightAddressMap *m_weight_map = nullptr;
 
 public:
-  explicit ThreadPool(size_t num_threads, bool use_tracez = false)
-      : m_use_tracez(use_tracez) {
+  explicit ThreadPool(size_t num_threads, bool use_tracez,
+                      const WeightAddressMap *weight_map)
+      : m_use_tracez(use_tracez), m_weight_map(weight_map) {
     for (size_t i = 0; i < num_threads; ++i) {
       workers.emplace_back([this] {
         while (true) {
@@ -129,7 +133,7 @@ public:
             filepath = std::move(tasks.front());
             tasks.pop_front();
           }
-          group_per_block(filepath, m_use_tracez);
+          group_per_block(filepath, m_use_tracez, m_weight_map);
           {
             std::lock_guard<std::mutex> lock(queue_mutex);
             --in_flight;
@@ -172,17 +176,20 @@ std::vector<std::string> kernelslist_list;
 int main(int argc, char **argv) {
   string kernellist_filepath;
   string filepath;
+  string weight_map_path;
   int max_threads = 8; // default thread limit
 
   bool use_tracez = true;
 
   // Parse arguments
   if (argc == 1) {
-    cerr << "Usage: " << argv[0] << " <path> [-j N] [--text]\n";
+    cerr << "Usage: " << argv[0]
+         << " <path> [-j N] [--text] [--weight-map FILE]\n";
     cerr << "  path: kernelslist file or directory containing kernelslist "
             "files\n";
     cerr << "  -j N: limit to N parallel threads (default: 8)\n";
     cerr << "  --text: output .traceg (plain text) instead of .tracez\n";
+    cerr << "  --weight-map FILE: mark weight LDGSTS loads with .WEIGHT\n";
     return 1;
   }
 
@@ -194,11 +201,24 @@ int main(int argc, char **argv) {
         max_threads = 1;
     } else if (string(argv[i]) == "--text") {
       use_tracez = false;
+    } else if (string(argv[i]) == "--weight-map" && i + 1 < argc) {
+      weight_map_path = argv[++i];
+    } else {
+      cerr << "Unknown or incomplete argument: " << argv[i] << "\n";
+      return 1;
     }
   }
 
+  WeightAddressMap weight_map;
+  if (!weight_map_path.empty() && !weight_map.load(weight_map_path)) {
+    cerr << "Cannot load valid weight address ranges from " << weight_map_path
+         << "\n";
+    return 1;
+  }
+
   // Initialize thread pool
-  ThreadPool pool(max_threads, use_tracez);
+  ThreadPool pool(max_threads, use_tracez,
+                  weight_map_path.empty() ? nullptr : &weight_map);
   cerr << "Using " << max_threads << " parallel threads\n";
   if (use_tracez)
     cerr << "Output format: .tracez (zstd compressed)\n";
@@ -702,7 +722,8 @@ static void drop_unused_trywaits(const string &filepath_str,
 
 // Thread-safe function using popen/pclose for I/O instead of stdin/stdout
 // redirection. Each thread processes one kernel trace file independently.
-void group_per_block(const string &filepath, bool use_tracez) {
+void group_per_block(const string &filepath, bool use_tracez,
+                     const WeightAddressMap *weight_map) {
   const string &filepath_str = filepath;
   WarpInstLUT warp_inst_lut;
 
@@ -763,6 +784,7 @@ void group_per_block(const string &filepath, bool use_tracez) {
 
   // Add a flag for LDGSTS instruction to indicate which one to remove
   vector<vector<bool>> ldgsts_flags; // true to remove, false to not
+  size_t weight_marks = 0;
 
   while (fgets_string(source_fp, line)) {
     if (line.length() == 0 || line[0] == '#') {
@@ -844,30 +866,49 @@ void group_per_block(const string &filepath, bool use_tracez) {
       }
       opcode_ss >> opcode;
 
-      // Look up the warp inst table to see if this instruction has been
-      // registered. If yes, we just copy the pointer to that string.
-      const string *inst_ptr = warp_inst_lut.lookup_entry(rest_of_line);
-      if (!inst_ptr)
-        inst_ptr = warp_inst_lut.register_new_entry(rest_of_line);
-
       // One actual LDGSTS instruction includes 2 LDGSTS instructions in the
       // trace, because it has two memory references. This is trying to remove
       // the one with the shared memory address.
-
       // Check if opcode starts with "LDGSTS" (not just contains it, to avoid
       // matching ARRIVES.LDGSTSBAR)
       if (opcode.rfind("LDGSTS", 0) == 0) {
-        if (!ldgsts_flags[tb_id][warpid_tb]) {
-          insts[tb_id].warp_insts_array[warpid_tb].push_back(inst_ptr);
-        }
+        const bool keep_global_reference = !ldgsts_flags[tb_id][warpid_tb];
         ldgsts_flags[tb_id][warpid_tb] = !ldgsts_flags[tb_id][warpid_tb];
-      } else {
-        insts[tb_id].warp_insts_array[warpid_tb].push_back(inst_ptr);
+        if (!keep_global_reference) continue;
+
+        if (weight_map) {
+          string token;
+          while (opcode_ss >> token) {
+            if (token.rfind("0x", 0) != 0) continue;
+            try {
+              size_t parsed = 0;
+              uint64_t address = std::stoull(token, &parsed, 16);
+              if (parsed == token.size() && weight_map->contains(address)) {
+                const size_t opcode_pos = rest_of_line.find(opcode);
+                if (opcode_pos != string::npos) {
+                  rest_of_line.insert(opcode_pos + opcode.size(), ".WEIGHT");
+                  ++weight_marks;
+                }
+              }
+            } catch (const std::exception &) {
+              // Malformed memory address: leave the instruction unmarked.
+            }
+            break;
+          }
+        }
       }
+
+      const string *inst_ptr = warp_inst_lut.register_new_entry(rest_of_line);
+      insts[tb_id].warp_insts_array[warpid_tb].push_back(inst_ptr);
     }
   }
 
   pclose(source_fp);
+  if (weight_map) {
+    lock_guard<mutex> lock(stderr_mutex);
+    cerr << "WeightAddress: marked " << weight_marks << " LDGSTS loads in "
+         << filepath_str << "\n";
+  }
 
   drop_unused_trywaits(filepath_str, insts, lineinfo);
 

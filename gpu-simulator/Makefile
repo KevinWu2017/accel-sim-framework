@@ -42,9 +42,9 @@ else
 	CXXFLAGS = -Wall -O3 -g3 -fPIC -std=c++17
 endif
 
-CXXFLAGS+=-I./trace-driven -I./trace-parser -I$(GPGPUSIM_ROOT)/libcuda -I$(GPGPUSIM_ROOT)/src -I$(CUDA_INSTALL_PATH)/include -I$(BUILD_DIR)
+CXXFLAGS+=-I./trace-driven -I./trace-parser -I../util/tracer_nvbit/tracer_tool -I$(GPGPUSIM_ROOT)/libcuda -I$(GPGPUSIM_ROOT)/src -I$(CUDA_INSTALL_PATH)/include -I$(BUILD_DIR)
 
-LIBS+=-L$(GPGPUSIM_ROOT)/lib/$(GPGPUSIM_CONFIG)/ -lcudart -lm -lz -lGL -lzstd -pthread $(BUILD_DIR)/*.o
+LIBS+=-L$(GPGPUSIM_ROOT)/lib/$(GPGPUSIM_CONFIG)/ -lcudart -lm -lz -lGL -lzstd -pthread
 
 all: $(BIN_DIR)/accel-sim.out
 
@@ -64,7 +64,7 @@ checkenv: makedirs
 	fi
 
 $(BIN_DIR)/accel-sim.out: trace-driven trace-parser gpgpu-sim makedirs version
-	$(CXX) $(CXXFLAGS) $(LIBS) -o $(BIN_DIR)/accel-sim.out accel-sim.cc main.cc 
+	$(CXX) $(CXXFLAGS) -o $(BIN_DIR)/accel-sim.out accel-sim.cc main.cc $(BUILD_DIR)/*.o $(LIBS)
 
 version:
 	echo "const char *g_accelsim_version=\"$(ACCELSIM_BUILD)\";" > $(BUILD_DIR)/accelsim_version.h
